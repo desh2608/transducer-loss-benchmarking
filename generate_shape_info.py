@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 #
 # Copyright    2022  Xiaomi Corp.        (authors: Fangjun Kuang)
+#              2022  Johns Hopkins Univ. (authors: Desh Raj)
 #
 # See ../LICENSE for clarification regarding multiple authors
 #
@@ -23,7 +24,9 @@ This script takes the following two files as input:
     - cuts_train-clean-100.json.gz
     - bpe.model
 
-to generate the shape information for benchmarking.
+to generate the shape information for benchmarking. The cut set should
+additionally contain word-level alignment information in the supervisions,
+if you want to benchmark the Alignment Restricted transducer.
 
 The above two files can be generate by
 https://github.com/k2-fsa/icefall/blob/master/egs/librispeech/ASR/prepare.sh
@@ -34,6 +37,7 @@ data during benchmarking so that the benchmarking results look more realistic.
 
 import argparse
 from pathlib import Path
+from tqdm import tqdm
 
 import sentencepiece as spm
 import torch
@@ -68,7 +72,49 @@ def get_parser():
         """,
     )
 
+    parser.add_argument(
+        "--generate-valid-ranges",
+        action="store_true",
+        help="""If true, generate the valid ranges for the
+        Alignment Restricted transducer.""",
+    )
+
+    parser.add_argument(
+        "--left-buffer",
+        type=int,
+        default=0,
+        help="""Left buffer for the emission time of a token.""",
+    )
+
+    parser.add_argument(
+        "--right-buffer",
+        type=int,
+        default=15,
+        help="""Right buffer for the emission time of a token.""",
+    )
+
     return parser
+
+
+def encode_bpe_with_alignment(sp, alignment, frame_shift=0.01):
+    """
+    Encode a sentence using BPE with word-level alignment information. Propagate the
+    alignment information to the BPE tokens. The output contains a list of tuples,
+    where each tuple contains the BPE token and its corresponding alignment information
+    in the format of (start_frame, end_frame).
+    """
+    bpe_alignments = []
+    alignment = sorted(alignment, key=lambda x: x.start)
+    for item in alignment:
+        if item.symbol == "":
+            continue
+        bpe_tokens = sp.encode(item.symbol)
+        duration_per_token = item.duration / len(bpe_tokens)
+        for i, token in enumerate(bpe_tokens):
+            st = (item.start + i * duration_per_token) / frame_shift
+            en = (item.start + (i + 1) * duration_per_token) / frame_shift
+            bpe_alignments.append((token, st, en))
+    return bpe_alignments
 
 
 def main():
@@ -82,15 +128,37 @@ def main():
     cuts = load_manifest(args.manifest)
 
     TU_list = []
+    if args.generate_valid_ranges:
+        valid_ranges_list = []
 
-    for i, c in enumerate(cuts):
-        tokens = sp.encode(c.supervisions[0].text)
+    for c in tqdm(cuts, desc="Processing cuts"):
+        sup = c.supervisions[0]
         num_frames = c.features.num_frames
+
+        if args.generate_valid_ranges:
+            if sup.alignment is None:
+                continue
+            tokens = encode_bpe_with_alignment(
+                sp, sup.alignment["word"], frame_shift=c.features.frame_shift
+            )
+
+            # Compute the valid ranges for each token
+            valid_ranges = torch.zeros(U, 2, dtype=torch.int32)
+            for j, (token, st, en) in enumerate(tokens):
+                valid_ranges[j, 0] = max(0, int(st - args.left_buffer))
+                valid_ranges[j, 1] = min(num_frames, int(en + args.right_buffer))
+
+            valid_ranges_list.append(valid_ranges)
+
+        else:
+            tokens = sp.encode(sup.text)
+
         U = len(tokens)
 
         # We assume the encoder has a subsampling_factor 4
         T = ((num_frames - 1) // 2 - 1) // 2
         TU_list.append([T, U])
+
     # NT_tensor has two columns.
     # column 0 - T
     # column 1 - U
@@ -98,6 +166,14 @@ def main():
     print("TU_tensor.shape", TU_tensor.shape)
     torch.save(TU_tensor, "./shape_info.pt")
     print("Generate ./shape_info.pt successfully")
+
+    if args.generate_valid_ranges:
+        # valid_ranges_list contains a list of tensors. Each tensor has two columns.
+        # column 0 - start frame
+        # column 1 - end frame
+        # Each row corresponds to a BPE token.
+        torch.save(valid_ranges_list, "./valid_ranges.pt")
+        print("Generate ./valid_ranges.pt successfully")
 
 
 if __name__ == "__main__":

@@ -133,7 +133,10 @@ git clone https://github.com/csukuangfj/transducer-loss-benchmarking.git
 
 Since padding matters in transducer loss computation, we get the shape information
 for `logits` and `targets` from the subset `train-clean-100` of the [LibriSpeech][LibriSpeech]
-dataset to make the benchmark results more realistic.
+dataset to make the benchmark results more realistic. Additionally, we also generate
+the `valid_ranges` that are required for training AR-RNNT (alignment restricted RNNT)
+model. For this, we use the external LibriSpeech alignments (see the Lhotse recipe for
+more information).
 
 We use the script <https://github.com/k2-fsa/icefall/blob/master/egs/librispeech/ASR/prepare.sh>
 to prepare the manifest of `train-clean-100`. This script also produces a BPE model with vocabulary
@@ -143,9 +146,17 @@ The script `./generate_shape_info.py` in this repo generates a 2-D tensor, where
 containing information abut each utterance in `train-clean-100`:
   - Column 0 contains the number of acoustic frames after subsampling, i.e., the `T` in transducer loss computation
   - Column 1 contains the number of BPE tokens, i.e., the `U` in transducer loss computation
+These are saved to `./shape_info.pt`.
 
-**Hint**: We have saved the generated file `./shape_info.pt` in this repo so you don't need
-to run this step. If you want to do benchmarks on other dataset, you will find `./generate_shape_info.py`
+Additionally, if `--generate-valid-ranges` is passed as an option, it generates valid ranges
+(only for those utterances for which alignments are present in the manifest). This is a list
+of tensors (1 tensor per utterance). Each of these tensors has shape `(U, 2)`, where each
+row denotes the start frame and end frame for the corresponding BPE token. These are saved
+to `./valid_ranges.pt`.
+
+**Hint**: We have saved the generated files `./shape_info.pt` and `./valid_ranges.pt` in this repo so you don't need to run this step. You can extract them by running `tar -xvzf libri_stats.tar.gz`.
+
+If you want to do benchmarks on other dataset, you will find `./generate_shape_info.py`
 very handy.
 
 ## Step 2: Run benchmarks
@@ -163,6 +174,7 @@ We have the following benchmarks so far:
 | `warp-transducer`         | `./benchmark_warp_transducer.py` | `./log/warp-transducer-30`      |
 | `warp-rnnt`               | `./benchmark_warp_rnnt.py`       | `./log/warp-rnnt-30`            |
 | `SpeechBrain`             | `./benchmark_speechbrain.py`     | `./log/speechbrain-30`          |
+| `alignment_restricted_transducer` | `./benchmark_art.py`     | `./log/ar_transducer-30`        |
 
 The first column shows the names of different implementations of transducer loss, the second
 column gives the command to run the benchmark, and the last column is the
