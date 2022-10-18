@@ -22,18 +22,23 @@ import torch
 import torch.nn as nn
 
 SHAPE_FILE = "./shape_info.pt"
+VALID_RANGES_FILE = "./valid_ranges.pt"
 
 
 class ShapeGenerator:
-    def __init__(self, batch_size: int):
+    def __init__(self, batch_size: int, valid_ranges: bool = False):
         """
         Args:
           batch_size:
             Size of each batch.
+          valid_ranges:
+            If True, also return valid_ranges corresponding to each batch.
+
         """
         # It is a 2-D tensor where column 0 contains information
         # above T and column 1 is about U.
         self.shape_info = torch.load(SHAPE_FILE)
+        self.valid_ranges_list = torch.load(VALID_RANGES_FILE) if valid_ranges else None
         self._generate_batches(batch_size)
         self.batch_size = batch_size
 
@@ -46,7 +51,11 @@ class ShapeGenerator:
             end = r + batch_size
 
             this_batch = self.shape_info[begin:end].tolist()
-            batches.append(this_batch)
+            if self.valid_ranges_list is not None:
+                this_batch_valid_ranges = self.valid_ranges_list[begin:end]
+                batches.append((this_batch, this_batch_valid_ranges))
+            else:
+                batches.append(this_batch)
 
             r = end
         self.batches = batches
@@ -55,28 +64,32 @@ class ShapeGenerator:
         return iter(self.batches)
 
     def __str__(self) -> str:
-        return (
-            f"num_batches: {len(self.batches)}, batch_size: {self.batch_size}"
-        )
+        return f"num_batches: {len(self.batches)}, batch_size: {self.batch_size}"
 
 
 class SortedShapeGenerator:
-    def __init__(self, max_frames: int):
+    def __init__(self, max_frames: int, valid_ranges: bool = False):
         """
         Args:
-          Maximum number of frames in a batch before padding.
+          max_frames:
+            Maximum number of frames in a batch before padding.
+          valid_ranges:
+            If True, also return valid_ranges corresponding to each batch.
         """
         # It is a 2-D tensor where column 0 contains information
         # above T and column 1 is about U.
         self.shape_info = torch.load(SHAPE_FILE)
+        self.valid_ranges_list = torch.load(VALID_RANGES_FILE) if valid_ranges else None
         self._generate_batches(max_frames)
         self.max_frames = max_frames
 
     def _generate_batches(self, max_frames: int) -> None:
-        self.shape_info = torch.sort(
-            self.shape_info, dim=0, descending=True
-        ).values
+        self.shape_info, indices = torch.sort(
+            self.shape_info, dim=0, descending=True, stable=True
+        )
         shape_info = self.shape_info.tolist()
+        if self.valid_ranges_list is not None:
+            self.valid_ranges_list = self.valid_ranges_list[indices]
 
         batches: List[List[Tuple[int, int]]] = []
         num_rows = self.shape_info.size(0)
@@ -88,12 +101,18 @@ class SortedShapeGenerator:
             T = shape_info[r][0]
             this_T += T
             if this_T <= max_frames:
-                this_batch.append(shape_info[r])
+                if self.valid_ranges_list is not None:
+                    this_batch.append((shape_info[r], self.valid_ranges_list[r]))
+                else:
+                    this_batch.append(shape_info[r])
                 r += 1
                 continue
 
             if len(this_batch) == 0:
-                this_batch.append(shape_info[r])
+                if self.valid_ranges_list is not None:
+                    this_batch.append((shape_info[r], self.valid_ranges_list[r]))
+                else:
+                    this_batch.append(shape_info[r])
                 r += 1
 
             batches.append(this_batch)
@@ -119,9 +138,7 @@ class SortedShapeGenerator:
         return iter(self.batches)
 
     def __str__(self) -> str:
-        return (
-            f"num_batches: {len(self.batches)}, batch_size: {self.batch_size}"
-        )
+        return f"num_batches: {len(self.batches)}, batch_size: {self.batch_size}"
 
 
 def generate_data(
